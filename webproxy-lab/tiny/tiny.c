@@ -17,7 +17,7 @@ void serve_dynamic(int fd, char *filename, char *cgiargs);
 void clienterror(int fd, char *cause, char *errnum, char *shortmsg,
                  char *longmsg);
 
-int main(int argc, char **argv)
+int main_tiny(int argc, char **argv)
 {
   int listenfd, connfd;
   char hostname[MAXLINE], port[MAXLINE];
