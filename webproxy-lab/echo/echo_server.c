@@ -39,6 +39,8 @@ int main(int argc, char **argv) {
         echo(connfd);
 
         // 통신 종료 후 소켓 닫기
+        printf("연결 종료\n");
+        fflush(stdout);
         Close(connfd);
     }
 
@@ -113,6 +115,9 @@ void echo(int connfd) {
         // 읽은 데이터를 클라이언트에게 다시 전송 (에코)
         Rio_writen(connfd, buf, n);
     }
+
+    printf("echo 종료\n");
+    fflush(stdout);
 
     // 클라이언트가 EOF(연결 종료)를 보내면 반복문 탈출
 }
