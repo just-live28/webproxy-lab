@@ -11,7 +11,7 @@
 void doit(int fd);  // 클라이언트 요청을 해석한 뒤, 정적 또는 동적 컨텐츠를 클라이언트에게 제공하는 tiny의 핵심 요청 처리 함수
 void read_requesthdrs(rio_t *rp); // 요청 헤더를 읽는 함수(사실상 무시)
 int parse_uri(char *uri, char *filename, char *cgiargs);  // uri 해석 함수 (정적/동적 여부 판단 + filename, cgiargs 추출)
-void serve_static(int fd, char *filename, int filesize);  // 정적 파일 전송 함수
+void serve_static(int fd, char *filename, int filesize, char *method);  // 정적 파일 전송 함수
 void get_filetype(char *filename, char *filetype);
 void serve_dynamic(int fd, char *filename, char *cgiargs);
 void clienterror(int fd, char *cause, char *errnum, char *shortmsg, char *longmsg); // 에러메시지 생성 및 전송 함수
@@ -57,8 +57,9 @@ void doit(int fd) {
   printf("Request headers:\n");
   printf("%s", buf);
   sscanf(buf, "%s %s %s", method, uri, version);
-  if (strcasecmp(method, "GET")) {
-    clienterror(fd, method, "501", "Not implemented", "Tiny does not implement this method");
+  if (!(strcasecmp(method, "GET") == 0 || strcasecmp(method, "HEAD") == 0)) {
+    clienterror(fd, method, "501", "Not Implemented", 
+                "Tiny does not implement this method");
     return;
   }
   read_requesthdrs(&rio);
@@ -76,7 +77,7 @@ void doit(int fd) {
       clienterror(fd, filename, "403", "Forbidden", "Tiny couldn't read the file");
       return;
     }
-    serve_static(fd, filename, sbuf.st_size);
+    serve_static(fd, filename, sbuf.st_size, method);
   } else {  // 동적 컨텐츠인 경우
     if (!(S_ISREG(sbuf.st_mode)) || !(S_IXUSR & sbuf.st_mode)) {
       clienterror(fd, filename, "403", "Forbidden", "Tiny couldn't run the CGI program");
@@ -86,7 +87,7 @@ void doit(int fd) {
   }
 }
 
-void serve_static(int fd, char *filename, int filesize) {
+void serve_static(int fd, char *filename, int filesize, char *method) {
   int srcfd;
   char *srcp, filetype[MAXLINE], buf[MAXBUF];
 
@@ -100,6 +101,9 @@ void serve_static(int fd, char *filename, int filesize) {
   Rio_writen(fd, buf, strlen(buf));
   printf("Response headers:\n");
   printf("%s", buf);
+
+  if (strcasecmp(method, "HEAD") == 0)
+    return;
 
   // 클라이언트에게 응답 body 전송
   srcfd = Open(filename, O_RDONLY, 0);
