@@ -4,19 +4,39 @@
 /* Recommended max cache and object sizes */
 #define MAX_CACHE_SIZE 1049000
 #define MAX_OBJECT_SIZE 102400
+#define NTHREADS 4
+#define SBUFSIZE 16
 
+typedef struct {
+  int *buf;            // connfd 저장 배열
+  int front;                    // dequeue 인덱스
+  int rear;                     // enqueue 인덱스
+  int n;                        // 현재 들어있는 아이템 수
+
+  pthread_mutex_t mutex;        // 큐 접근 mutex
+  pthread_cond_t slots;         // 빈 슬롯이 생겼을 때 signal
+  pthread_cond_t items;         // 아이템이 추가되었을 때 signal
+} sbuf_t; // 작업 큐 구조체
+
+void *thread(void *vargp);
 void read_requesthdrs(rio_t *rp);
 int parse_uri(char *uri, char*host, char *port, char *path);
 void func(int connfd);
+
+// 스레드 풀 함수
+void sbuf_init(sbuf_t *sp, int n);        // 큐 초기화
+void sbuf_insert(sbuf_t *sp, int item);   // connfd 저장 (enqueue)
+int sbuf_remove(sbuf_t *sp);              // connfd 꺼내기 (dequeue)
+
 
 /* You won't lose style points for including this long line in your code */
 static const char *user_agent_hdr =
     "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 "
     "Firefox/10.0.3\r\n";
+sbuf_t sbuf;
 
 int main(int argc, char **argv) {
   int listenfd, connfd;
-  char hostname[MAXLINE], port[MAXLINE];
   socklen_t clientlen;
   struct sockaddr_storage clientaddr;
 
@@ -27,14 +47,23 @@ int main(int argc, char **argv) {
     exit(1);
   }
 
+  sbuf_init(&sbuf, SBUFSIZE); // 작업 큐 초기화
+
+  // 워커 스레드 생성
+  pthread_t tid;
+  for (int i = 0; i < NTHREADS; i++) {
+    pthread_create(&tid, NULL, thread, NULL);
+  }
+
+  // 메인 스레드: 클라이언트 연결 수락 및 큐에 삽입
   listenfd = Open_listenfd(argv[1]);
   while (1) {
-    struct sockaddr_storage clientaddr;
-    socklen_t clientlen = sizeof(clientaddr);
+    clientlen = sizeof(clientaddr);
     connfd = Accept(listenfd, (SA *)&clientaddr, &clientlen);
-    func(connfd);
-    Close(connfd);
+    sbuf_insert(&sbuf, connfd); // connfd를 큐에 삽입
   }
+
+  return 0;
 }
 
 void func(int connfd) {
@@ -129,4 +158,54 @@ int parse_uri(char *uri, char*host, char *port, char *path) {
   }
 
   return 0;
+}
+
+void sbuf_init(sbuf_t *sp, int n) {
+  sp->buf = Calloc(n, sizeof(int));     // connfd 저장용 배열 할당
+  sp->n = n;                            // 버퍼 크기 저장
+  sp->front = sp->rear = 0;             // 초기 인덱스 0
+  pthread_mutex_init(&sp->mutex, NULL); // mutex 초기화
+  pthread_cond_init(&sp->slots, NULL);  // 빈 슬롯 대기 조건 변수 초기화
+  pthread_cond_init(&sp->items, NULL);  // 아이템 대기 조건 변수 초기화
+
+}
+
+void sbuf_insert(sbuf_t *sp, int item) {
+  pthread_mutex_lock(&sp->mutex);       // 큐 접근 mutext 잠금
+
+  while (((sp->rear + 1) % sp->n) == sp->front) { // 큐가 가득 찬 경우
+    pthread_cond_wait(&sp->slots, &sp->mutex);    // 빈 슬롯이 생길 때까지 대기
+  }
+
+  sp->buf[sp->rear] = item;           // connfd를 rear 위치에 저장
+  sp->rear = (sp->rear + 1) % sp->n;  // rear 인덱스 증가 (원형 회전)
+
+  pthread_cond_signal(&sp->items);    // 대기 중인 워커 스레드에게 작업이 생겼음을 알림
+  pthread_mutex_unlock(&sp->mutex);   // mutex 잠금 해제
+}
+
+int sbuf_remove(sbuf_t *sp) {
+  pthread_mutex_lock(&sp->mutex); // 큐 접근 잠금
+
+  while (sp->front == sp->rear) { // 큐가 비어있는 경우
+    pthread_cond_wait(&sp->items, &sp->mutex);  // 아이템이 들어올 때까지 대기
+  }
+
+  int item = sp->buf[sp->front];        // front 위치의 connfd 가져오기
+  sp->front = (sp->front + 1) % sp->n;  // front 인덱스 증가 (원형 회전)
+
+  pthread_cond_signal(&sp->slots);      // 대기 중인 메인 스레드에게 공간이 생겼음을 알림
+  pthread_mutex_unlock(&sp->mutex);     // 잠금 해제
+
+  return item;  // connfd 반환
+}
+
+void *thread(void *vargp) {
+  pthread_detach(pthread_self()); // 스레드 자원 자동 회수
+
+  while (1) {
+    int connfd = sbuf_remove(&sbuf);  // 작업 큐에서 connfd 꺼내기
+    func(connfd);                     // 요청 처리 함수 호출
+    close(connfd);                    // 클라이언트와의 연결 종료
+  }
 }

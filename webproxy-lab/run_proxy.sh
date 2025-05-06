@@ -16,6 +16,7 @@ pkill -f "tail -f $TINY_LOG" 2>/dev/null
 : > "$TINY_LOG"
 
 # ========== Tiny 실행 ==========
+chmod +x "$TINY_EXEC"
 echo "🔵 Starting Tiny server on port $TINY_PORT..."
 stdbuf -oL "$TINY_EXEC" "$TINY_PORT" >> "$TINY_LOG" 2>&1 &
 TINY_PID=$!
