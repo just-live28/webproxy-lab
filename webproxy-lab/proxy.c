@@ -36,7 +36,6 @@ typedef struct {
 } cache_t;  // 캐시 구조체
 
 void *thread(void *vargp);
-void read_requesthdrs(rio_t *rp);
 int parse_uri(char *uri, char*host, char *port, char *path);
 void func(int connfd);
 
@@ -47,7 +46,7 @@ int sbuf_remove(sbuf_t *sp);              // connfd 꺼내기 (dequeue)
 
 // 캐시 함수
 void cache_init(cache_t *cache);  // 캐시 초기화
-cache_node_t *find_cache(cache_t *cache, const char *uri);  // 캐시 검색
+int find_cache_and_send(int connfd, cache_t *cache, const char *uri);  // 캐시 검색 및 적중 시 전송
 void insert_cache(cache_t *cache, const char *uri, const char *data, int size); // 캐시에 새 노드 삽입
 void evict_cache(cache_t *cache); // 캐시 마지막 노드 제거
 
@@ -103,13 +102,8 @@ void func(int connfd) {
   if (!Rio_readlineb(&client_rio, buf, MAXLINE)) return;
   sscanf(buf, "%s %s %s", method, uri, version);
 
-  // 2. 캐시 검색
-  cache_node_t *cached = find_cache(&cache, uri);
-  if (cached) {
-    // Cache Hit -> 응답 전송 후 종료
-    Rio_writen(connfd, cached->data, cached->size);
-    return;
-  }
+  // 2. 캐시 검색 및 적중 시 전송 후 작업 종료
+  if (find_cache_and_send(connfd, &cache, uri)) return;
 
   // 3. URI 파싱 (호출 전 캐시 삽입용 URI 원본 복사)
   char uri_key[MAXLINE];
@@ -270,21 +264,19 @@ void cache_init(cache_t *cache) {
   pthread_rwlock_init(&cache->lock, NULL);
 }
 
-cache_node_t *find_cache(cache_t *cache, const char *uri) {
-  pthread_rwlock_rdlock(&cache->lock); // 읽기 락(읽기 시에는 동시 접근 가능)
-
+int find_cache_and_send(int connfd, cache_t *cache, const char *uri) {
+  pthread_rwlock_rdlock(&cache->lock);
   cache_node_t *node = cache->head;
   while (node) {
-    if (strcmp(node->uri, uri) == 0) {
-      // Cache Hit: 적중한 노드를 Head로 이동
-      pthread_rwlock_unlock(&cache->lock); // 캐시 접근 보호 해제
-      return node;
-    }
-    node = node->next;
+      if (strcmp(node->uri, uri) == 0) {
+          Rio_writen(connfd, node->data, node->size);
+          pthread_rwlock_unlock(&cache->lock);
+          return 1;  // hit
+      }
+      node = node->next;
   }
-  // Cache Miss
-  pthread_rwlock_unlock(&cache->lock); // 읽기 락 해제
-  return NULL;  // 캐시에 없으면 NULL 반환
+  pthread_rwlock_unlock(&cache->lock);
+  return 0; // miss
 }
 
 void insert_cache(cache_t *cache, const char *uri, const char *data, int size) {
